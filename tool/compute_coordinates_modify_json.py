@@ -1,8 +1,8 @@
 import pose_utils
 import os
 import numpy as np
-
-from keras.models import load_model
+import json
+from tensorflow.keras.models import load_model
 import skimage.transform as st
 import pandas as pd
 from tqdm import tqdm
@@ -14,7 +14,7 @@ from cmd_customize import args
 
 
 args = args()
-
+print('estimator path ', args.pose_estimator)
 model = load_model(args.pose_estimator)
 
 
@@ -46,14 +46,14 @@ def compute_cordinates(heatmap_avg, paf_avg, th1=0.1, th2=0.05):
 
         peaks_binary = np.logical_and.reduce((map>=map_left, map>=map_right, map>=map_up, map>=map_down, map > th1))
         peaks = zip(np.nonzero(peaks_binary)[1], np.nonzero(peaks_binary)[0]) # note reverse
+        peaks = list(peaks)
 
         peaks_with_score = [x + (map_ori[x[1],x[0]],) for x in peaks]
-        peaks_len = len(peaks_with_score)
-        id = range(peak_counter, peak_counter + peaks_len)
+        id = range(peak_counter, peak_counter + len(peaks))
         peaks_with_score_and_id = [peaks_with_score[i] + (id[i],) for i in range(len(id))]
 
         all_peaks.append(peaks_with_score_and_id)
-        peak_counter += peaks_len
+        peak_counter += len(peaks)
 
     connection_all = []
     special_k = []
@@ -131,7 +131,7 @@ def compute_cordinates(heatmap_avg, paf_avg, th1=0.1, th2=0.05):
                         subset[j][-2] += candidate[partBs[i].astype(int), 2] + connection_all[k][i][2]
                 elif found == 2: # if found 2 and disjoint, merge them
                     j1, j2 = subset_idx
-                    # print "found = 2"
+                    #print "found = 2"
                     print("found = 2")
                     membership = ((subset[j1]>=0).astype(int) + (subset[j2]>=0).astype(int))[:-2]
                     if len(np.nonzero(membership == 2)[0]) == 0: #merge
@@ -161,25 +161,34 @@ def compute_cordinates(heatmap_avg, paf_avg, th1=0.1, th2=0.05):
     subset = np.delete(subset, deleteIdx, axis=0)
 
     if len(subset) == 0:
-        return np.array([[-1, -1]] * 18).astype(int)
+        #return np.array([[-1, -1]] * 18).astype(int)
+        return [0]
 
     cordinates = []
     result_image_index = np.argmax(subset[:, -2])
 
     for part in subset[result_image_index, :18]:
         if part == -1:
-            cordinates.append([-1, -1])
+            cordinates.append(0)
+            cordinates.append(0)
+            cordinates.append(0)
         else:
             Y = candidate[part.astype(int), 0]
             X = candidate[part.astype(int), 1]
-            cordinates.append([X, Y])
-    return np.array(cordinates).astype(int)
+            Z = candidate[part.astype(int), 2]
+            #print('X ', X, 'Y', Y)
+            cordinates.append(Y)
+            cordinates.append(X)
+            cordinates.append(Z)
+            print('cordinates is', cordinates)
+    return cordinates
+    #return np.array(cordinates).astype(float)
 
 # input_folder = './results/fashion_PATN/test_latest/images_crop/'
 # output_path = './results/fashion_PATN/test_latest/pckh.csv'
 
-#input_folder = './results/market_PATN/test_latest/images_crop/'
-#output_path = './results/market_PATN/test_latest/pckh.csv'
+#input_folder = '../../DeepFashion_Try_On/New_Pipeline/Data_preprocessing/model/'
+#input_folder = '../own_images/cropped'
 
 input_folder = args.pose_in_dir
 output_path = args.pose_out_path
@@ -190,20 +199,15 @@ threshold = 0.1
 boxsize = 368
 scale_search = [0.5, 1, 1.5, 2]
 
-if os.path.exists(output_path):
-    processed_names = set(pd.read_csv(output_path, sep=':')['name'])
-    result_file = open(output_path, 'a')
-else:
-    result_file = open(output_path, 'w')
-    processed_names = set()
-    #print >> result_file, 'name:keypoints_y:keypoints_x'
-    result_file.write('name:keypoints_y:keypoints_x\n')
 
 # for image_name in tqdm(os.listdir(input_folder)):
 for image_name in tqdm(img_list):
-    if image_name in processed_names:
-        continue
+   # if image_name in processed_names:
+   #     continue
 
+
+    data = {}
+    data['people'] = []
     oriImg = imread(os.path.join(input_folder, image_name))[:, :, ::-1]  # B,G,R order
 
     multiplier = [x * boxsize / oriImg.shape[0] for x in scale_search]
@@ -227,8 +231,17 @@ for image_name in tqdm(img_list):
 
     heatmap_avg /= len(multiplier)
 
+    pose_cords = []
     pose_cords = compute_cordinates(heatmap_avg, paf_avg)
-
-    #print >> result_file, "%s: %s: %s" % (image_name, str(list(pose_cords[:, 0])), str(list(pose_cords[:, 1])))
-    result_file.write("%s: %s: %s\n" % (image_name, str(list(pose_cords[:, 0])), str(list(pose_cords[:, 1]))))
-    result_file.flush()
+    data['people'].append({
+      "face_keypoints": [],
+      "pose_keypoints": pose_cords
+    })
+    prefix = image_name.split('.')[0]
+    #OUT_JSON = '../../DeepFashion_Try_On/New_Pipeline/Data_preprocessing/train_pose/'+ prefix + '_keypoints.json'
+    OUT_JSON = os.path.join(output_path, '{}_keypoints.json'.format(prefix))
+    #OUT_JSON = '../own_images/out_json/' + prefix + '_keypoints.json'
+    with open(OUT_JSON, 'w') as outfile:
+      json.dump(data, outfile)
+   # print >> result_file, "%s: %s" % (image_name, str(list(pose_cords)))
+   # result_file.flush()
